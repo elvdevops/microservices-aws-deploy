@@ -1,0 +1,33 @@
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - '3000:80'
+    depends_on:
+      - auth
+      - product
+    environment:
+      - REACT_APP_API_URL=http://localhost:80
+
+  auth:
+    build: ./auth-service
+    ports:
+      - '4001:4001'
+    environment:
+      - JWT_SECRET=dev_secret
+
+  product:
+    build: ./product-service
+    ports:
+      - '4002:4002'
+
+  proxy:
+    image: nginx:stable-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - '80:80'
+    depends_on:
+      - frontend
+      - auth
+      - product
