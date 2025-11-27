@@ -28,6 +28,13 @@ module "alb" {
   environment         = "dev"  # PLACEHOLDER
 }
 
+module "s3_frontend" {
+  source = "./modules/s3_frontend"
+
+  project = var.project
+  env     = var.env
+}
+
 module "ecs" {
   source = "./modules/ecs"
 

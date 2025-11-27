@@ -12,7 +12,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Configure AWS Credentials
+      # ----------------------------
+      # AWS CREDENTIALS FOR DOCKER/ECR
+      # ----------------------------
+      - name: Configure AWS Credentials (ECR)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}      # REQUIRED SECRET
@@ -32,10 +35,86 @@ jobs:
             docker push ${{ steps.login.outputs.registry }}/${SERVICE}-repo:latest
           done
 
+      # ---------------------------------------------------
+      # SWITCH TO IAM ROLE WITH HIGHER PERMISSIONS (TF + S3)
+      # ---------------------------------------------------
+      - name: Configure AWS Credentials (Deploy Role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}   # REQUIRED SECRET
+          aws-region: ${{ secrets.AWS_REGION }}         # REQUIRED SECRET
+
+      # ---------------------------------------------------
+      # CREATE S3 BUCKET IF NOT EXISTS + MAKE PUBLIC
+      # ---------------------------------------------------
+      - name: Create S3 Bucket if Missing
+        run: |
+          BUCKET="${{ secrets.FRONTEND_BUCKET }}"
+          REGION="${{ secrets.AWS_REGION }}"
+
+          # Check if bucket exists
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Bucket already exists: $BUCKET"
+          else
+            echo "Creating bucket: $BUCKET"
+            aws s3api create-bucket \
+              --bucket "$BUCKET" \
+              --region "$REGION" \
+              --create-bucket-configuration LocationConstraint="$REGION"
+          fi
+
+      - name: Disable Public Access Block
+        run: |
+          aws s3api put-public-access-block \
+            --bucket "${{ secrets.FRONTEND_BUCKET }}" \
+            --public-access-block-configuration \
+            "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false"
+
+      - name: Make S3 Bucket Public (Bucket Policy)
+        run: |
+          cat > bucket-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "PublicRead",
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": [ "s3:GetObject" ],
+                "Resource": "arn:aws:s3:::${{ secrets.FRONTEND_BUCKET }}/*"
+              }
+            ]
+          }
+          EOF
+
+          aws s3api put-bucket-policy \
+            --bucket "${{ secrets.FRONTEND_BUCKET }}" \
+            --policy file://bucket-policy.json
+
+      # ---------------------------------------------------
+      # UPLOAD FRONTEND BUILD TO S3
+      # ---------------------------------------------------
+      - name: Upload React build to S3
+        run: |
+          aws s3 sync frontend/build s3://${{ secrets.FRONTEND_BUCKET }} --delete
+
+      # ---------------------------------------------------
+      # TERRAFORM DEPLOYMENT
+      # ---------------------------------------------------
       - name: Terraform Init
         run: terraform -chdir=terraform init
 
       - name: Terraform Apply
         run: terraform -chdir=terraform apply -auto-approve
         env:
-          TF_VAR_region: "us-east-1"  # OPTIONAL
+          TF_VAR_region: "us-east-1"
+
+      # ---------------------------------------------------
+      # OUTPUT PUBLIC WEBSITE URL
+      # ---------------------------------------------------
+      - name: Echo Website URL
+        run: |
+          echo "---------------------------------------------"
+          echo "🌍 Public Website URL:"
+          echo "https://${{ secrets.FRONTEND_BUCKET }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com/index.html"
+          echo "---------------------------------------------"
